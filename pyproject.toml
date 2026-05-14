@@ -1,0 +1,14 @@
+[project]
+name = "metadata-saver-viewer"
+description = "ComfyUI custom nodes for saving one compact metadata JSON per generated image and viewing embedded image metadata."
+version = "0.1.0"
+license = { text = "MIT" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/bbc-s/metadata-saver-viewer"
+
+[tool.comfy]
+PublisherId = "bbc-s"
+DisplayName = "Metadata Saver Viewer"
+Icon = ""
