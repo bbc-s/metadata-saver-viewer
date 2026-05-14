@@ -44,6 +44,26 @@ def _parse_json_maybe(value):
         return value
 
 
+def _sanitize_large_values(value, max_string_length=50000):
+    if isinstance(value, str):
+        if len(value) <= max_string_length:
+            return value
+        return {
+            "__omitted_large_string__": True,
+            "length": len(value),
+            "sha256": hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest(),
+            "preview": value[:500],
+        }
+    if isinstance(value, list):
+        return [_sanitize_large_values(item, max_string_length=max_string_length) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_large_values(item, max_string_length=max_string_length)
+            for key, item in value.items()
+        }
+    return value
+
+
 def _node(prompt, node_id):
     if not isinstance(prompt, dict) or node_id is None:
         return None
@@ -277,14 +297,17 @@ def _build_metadata(prompt, extra_pnginfo, filename=None, subfolder=None, image_
     positive_prompt = prompt_summary.pop("positive_prompt", None)
     negative_prompt = prompt_summary.pop("negative_prompt", None)
     workflow = extra_pnginfo.get("workflow") if isinstance(extra_pnginfo, dict) else None
+    sanitized_prompt = _sanitize_large_values(prompt)
+    sanitized_workflow = _sanitize_large_values(workflow)
     extra_without_workflow = {
         key: value for key, value in extra_pnginfo.items()
         if key != "workflow"
     } if isinstance(extra_pnginfo, dict) else extra_pnginfo
+    sanitized_extra_without_workflow = _sanitize_large_values(extra_without_workflow)
 
     metadata = {
         "format": "ComfyUI Metadata Saver Viewer",
-        "format_version": 2,
+        "format_version": 3,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "image": {
             "filename": filename,
@@ -293,9 +316,13 @@ def _build_metadata(prompt, extra_pnginfo, filename=None, subfolder=None, image_
         },
         "summary": prompt_summary,
         "raw": {
-            "prompt": prompt,
-            "workflow": workflow,
-            "extra_pnginfo": extra_without_workflow,
+            "prompt": sanitized_prompt,
+            "workflow": sanitized_workflow,
+            "extra_pnginfo": sanitized_extra_without_workflow,
+        },
+        "compaction": {
+            "large_strings_over_chars": 50000,
+            "replacement": "Large strings are replaced with length, sha256, and preview to avoid recursive metadata growth from preview/text display nodes.",
         },
     }
 
@@ -453,11 +480,13 @@ class SaveImageWithMetadataJson:
             pnginfo = None
             if embed_png_metadata and not args.disable_metadata:
                 pnginfo = PngInfo()
-                if prompt is not None:
-                    pnginfo.add_text("prompt", json.dumps(prompt, default=_json_default))
-                if extra_pnginfo is not None:
-                    for key, value in extra_pnginfo.items():
-                        pnginfo.add_text(key, json.dumps(value, default=_json_default))
+                raw_metadata = metadata.get("raw", {})
+                if raw_metadata.get("prompt") is not None:
+                    pnginfo.add_text("prompt", json.dumps(raw_metadata["prompt"], default=_json_default))
+                if raw_metadata.get("workflow") is not None:
+                    pnginfo.add_text("workflow", json.dumps(raw_metadata["workflow"], default=_json_default))
+                for key, value in raw_metadata.get("extra_pnginfo", {}).items():
+                    pnginfo.add_text(key, json.dumps(value, default=_json_default))
                 embedded_summary = {
                     key: value for key, value in metadata.items()
                     if key not in {"raw"}

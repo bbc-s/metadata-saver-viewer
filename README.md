@@ -14,6 +14,8 @@ The saved JSON uses a compact v2 layout and keeps:
 
 `workflow` is stored once under `raw.workflow`, not duplicated inside `raw.extra_pnginfo`.
 
+Large runtime strings over 50,000 characters are compacted into a small placeholder with `length`, `sha256`, and `preview`. This prevents recursive growth when a text preview node displays the metadata JSON and ComfyUI includes that preview text in the next queued prompt.
+
 For `PerSampleLoraLoader`, the quick summary stores only the LoRA file name and the weight used for the saved image's batch index. Full LoRA settings remain in `raw.prompt`.
 
 `filename_prefix` can include subfolders and date/time formatting, for example:
