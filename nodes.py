@@ -252,12 +252,13 @@ def _per_sample_lora_weight(inputs, image_index):
         values = []
 
     if not values:
-        return None
+        return None, None, 0
 
     index = int(image_index or 0)
     if index < len(values):
-        return _format_float(values[index])
-    return _format_float(values[index % len(values)])
+        return _format_float(values[index]), index, len(values)
+    wrapped_index = index % len(values)
+    return _format_float(values[wrapped_index]), wrapped_index, len(values)
 
 
 def _usage_suffix(item):
@@ -342,7 +343,11 @@ def _collect_prompt_summary(prompt, image_index=None):
                 "used": str(node_id) in used_nodes,
             }
             if class_type == "PerSampleLoraLoader":
-                lora["weight"] = _per_sample_lora_weight(inputs, image_index)
+                weight, weight_index, weight_count = _per_sample_lora_weight(inputs, image_index)
+                lora["weight"] = weight
+                lora["weight_index"] = weight_index
+                lora["weight_count"] = weight_count
+                lora["sample_number"] = int(image_index or 0) + 1
             else:
                 strength_model = inputs.get("strength_model")
                 strength_clip = inputs.get("strength_clip")
