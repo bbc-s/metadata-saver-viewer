@@ -18,6 +18,8 @@ Large runtime strings over 50,000 characters are compacted into a small placehol
 
 For `PerSampleLoraLoader`, the quick summary stores only the LoRA file name and the weight used for the saved image's batch index. Full LoRA settings remain in `raw.prompt`.
 
+Quick summary entries for LoRA/model/VAE include `used: true/false` in `summary`. Human-readable top-level fields append `(unused)` when a detected node is present in the prompt but not connected to the saved image path.
+
 `filename_prefix` can include subfolders and date/time formatting, for example:
 
 ```text

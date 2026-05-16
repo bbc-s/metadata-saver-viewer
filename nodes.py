@@ -76,6 +76,65 @@ def _linked_node_id(value):
     return None
 
 
+def _linked_node_ids(value):
+    node_ids = []
+    if isinstance(value, list):
+        if len(value) >= 2 and isinstance(value[0], (str, int)) and isinstance(value[1], int):
+            node_ids.append(str(value[0]))
+        else:
+            for item in value:
+                node_ids.extend(_linked_node_ids(item))
+    elif isinstance(value, dict):
+        for item in value.values():
+            node_ids.extend(_linked_node_ids(item))
+    return node_ids
+
+
+def _is_output_root(class_type):
+    return class_type in {
+        "MSV_SaveImageWithMetadataJson",
+        "SaveImage",
+        "PreviewImage",
+        "SaveImageWebsocket",
+    }
+
+
+def _used_node_ids(prompt):
+    if not isinstance(prompt, dict):
+        return set()
+
+    roots = []
+    sampler_roots = []
+    for node_id, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type", "")
+        if _is_output_root(class_type):
+            roots.append(str(node_id))
+        if class_type in {"KSampler", "KSamplerAdvanced"}:
+            sampler_roots.append(str(node_id))
+
+    if not roots:
+        roots = sampler_roots
+
+    used = set()
+    stack = list(roots)
+    while stack:
+        node_id = stack.pop()
+        if node_id in used:
+            continue
+        used.add(node_id)
+        node = prompt.get(str(node_id))
+        if not isinstance(node, dict):
+            continue
+        for input_value in node.get("inputs", {}).values():
+            for linked_id in _linked_node_ids(input_value):
+                if linked_id not in used:
+                    stack.append(linked_id)
+
+    return used
+
+
 def _text_from_conditioning(prompt, link_value):
     node_id = _linked_node_id(link_value)
     seen = set()
@@ -201,6 +260,25 @@ def _per_sample_lora_weight(inputs, image_index):
     return _format_float(values[index % len(values)])
 
 
+def _usage_suffix(item):
+    if isinstance(item, dict) and item.get("used") is False:
+        return " (unused)"
+    return ""
+
+
+def _model_display_name(model):
+    for key in ("ckpt_name", "unet_name", "clip_name", "model_name", "model_path", "config_name"):
+        if model.get(key):
+            return model[key]
+    return model.get("class_type")
+
+
+def _model_role(class_type):
+    if class_type in {"CLIPLoader", "DualCLIPLoader", "TripleCLIPLoader"}:
+        return "clip"
+    return "base"
+
+
 def _collect_prompt_summary(prompt, image_index=None):
     summary = {
         "positive_prompt": None,
@@ -216,6 +294,8 @@ def _collect_prompt_summary(prompt, image_index=None):
     if not isinstance(prompt, dict):
         return summary
 
+    used_nodes = _used_node_ids(prompt)
+
     for node_id, node in prompt.items():
         if not isinstance(node, dict):
             continue
@@ -226,6 +306,7 @@ def _collect_prompt_summary(prompt, image_index=None):
 
         if class_type in {"KSampler", "KSamplerAdvanced"}:
             sampler = {"node_id": node_id, "class_type": class_type}
+            sampler["used"] = str(node_id) in used_nodes
             for key in (
                 "seed",
                 "noise_seed",
@@ -258,6 +339,7 @@ def _collect_prompt_summary(prompt, image_index=None):
             lora = {
                 "node_id": node_id,
                 "name": inputs.get("lora_name"),
+                "used": str(node_id) in used_nodes,
             }
             if class_type == "PerSampleLoraLoader":
                 lora["weight"] = _per_sample_lora_weight(inputs, image_index)
@@ -271,18 +353,46 @@ def _collect_prompt_summary(prompt, image_index=None):
                     lora["weight_clip"] = _format_float(strength_clip)
             summary["loras"].append(lora)
 
-        if class_type in {"CheckpointLoaderSimple", "CheckpointLoader", "unCLIPCheckpointLoader"}:
-            model = {"node_id": node_id, "class_type": class_type}
-            for key in ("ckpt_name", "config_name"):
+        if class_type in {
+            "CheckpointLoaderSimple",
+            "CheckpointLoader",
+            "unCLIPCheckpointLoader",
+            "UNETLoader",
+            "CLIPLoader",
+            "DualCLIPLoader",
+            "TripleCLIPLoader",
+            "DiffusersLoader",
+        }:
+            model = {
+                "node_id": node_id,
+                "class_type": class_type,
+                "role": _model_role(class_type),
+                "used": str(node_id) in used_nodes,
+            }
+            for key in (
+                "ckpt_name",
+                "config_name",
+                "unet_name",
+                "clip_name",
+                "clip_name1",
+                "clip_name2",
+                "clip_name3",
+                "model_name",
+                "model_path",
+            ):
                 if key in inputs:
                     model[key] = inputs[key]
             summary["models"].append(model)
 
         if class_type == "VAELoader":
-            summary["vae"].append({"node_id": node_id, "vae_name": inputs.get("vae_name")})
+            summary["vae"].append({
+                "node_id": node_id,
+                "vae_name": inputs.get("vae_name"),
+                "used": str(node_id) in used_nodes,
+            })
 
         if class_type in {"EmptyLatentImage", "EmptySD3LatentImage"}:
-            size = {"node_id": node_id}
+            size = {"node_id": node_id, "used": str(node_id) in used_nodes}
             for key in ("width", "height", "batch_size"):
                 if key in inputs:
                     size[key] = inputs[key]
@@ -307,7 +417,7 @@ def _build_metadata(prompt, extra_pnginfo, filename=None, subfolder=None, image_
 
     metadata = {
         "format": "ComfyUI Metadata Saver Viewer",
-        "format_version": 3,
+        "format_version": 4,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "image": {
             "filename": filename,
@@ -339,19 +449,31 @@ def _build_metadata(prompt, extra_pnginfo, filename=None, subfolder=None, image_
         metadata["Steps"] = sampler.get("steps")
         metadata["Guidance Scale"] = sampler.get("cfg")
         metadata["Denoise"] = sampler.get("denoise")
-    if prompt_summary["models"]:
-        metadata["Base Model"] = prompt_summary["models"][0].get("ckpt_name")
+    base_models = [model for model in prompt_summary["models"] if model.get("role") == "base"]
+    clip_models = [model for model in prompt_summary["models"] if model.get("role") == "clip"]
+    if base_models:
+        for index, model in enumerate(base_models, start=1):
+            label = "Base Model" if index == 1 else f"Model {index}"
+            metadata[label] = f"{_model_display_name(model)}{_usage_suffix(model)}"
+    if clip_models:
+        for index, model in enumerate(clip_models, start=1):
+            label = "CLIP Model" if index == 1 else f"CLIP Model {index}"
+            metadata[label] = f"{_model_display_name(model)}{_usage_suffix(model)}"
+    if prompt_summary["vae"]:
+        vae = prompt_summary["vae"][0]
+        metadata["VAE"] = f"{vae.get('vae_name')}{_usage_suffix(vae)}"
     for index, lora in enumerate(prompt_summary["loras"], start=1):
         name = lora.get("name")
+        suffix = _usage_suffix(lora)
         if lora.get("weight") is not None:
-            metadata[f"LoRA {index}"] = f"{name} : {lora['weight']}" if name else lora["weight"]
+            metadata[f"LoRA {index}"] = f"{name} : {lora['weight']}{suffix}" if name else f"{lora['weight']}{suffix}"
         elif lora.get("weight_model") is not None or lora.get("weight_clip") is not None:
             metadata[f"LoRA {index}"] = (
-                f"{name} : model={lora.get('weight_model')}, clip={lora.get('weight_clip')}"
+                f"{name} : model={lora.get('weight_model')}, clip={lora.get('weight_clip')}{suffix}"
                 if name else lora
             )
         else:
-            metadata[f"LoRA {index}"] = name if name else lora
+            metadata[f"LoRA {index}"] = f"{name}{suffix}" if name else lora
 
     return metadata
 
