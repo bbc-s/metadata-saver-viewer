@@ -554,6 +554,28 @@ def _read_sidecar_json(image_path):
         return json.load(handle), sidecar_path
 
 
+def _embedded_msv_metadata(embedded):
+    metadata = embedded.get("metadata_saver_viewer")
+    if isinstance(metadata, dict):
+        return metadata
+    return None
+
+
+def _image_index_from_metadata(metadata):
+    if not isinstance(metadata, dict):
+        return None
+    image = metadata.get("image")
+    if not isinstance(image, dict):
+        return None
+    batch_index = image.get("batch_index")
+    if batch_index is None:
+        return None
+    try:
+        return int(batch_index)
+    except (TypeError, ValueError):
+        return None
+
+
 class SaveImageWithMetadataJson:
     def __init__(self):
         self.output_dir = folder_paths.get_output_directory()
@@ -677,6 +699,8 @@ class LoadImageMetadata:
         image_tensor, mask_tensor = _read_image_and_mask(image_path)
         embedded, exif = _read_embedded_metadata(image_path)
         sidecar, sidecar_path = _read_sidecar_json(image_path)
+        embedded_msv = _embedded_msv_metadata(embedded)
+        embedded_image_index = _image_index_from_metadata(embedded_msv)
 
         raw_prompt = embedded.get("prompt")
         raw_extra = {key: value for key, value in embedded.items() if key not in {"prompt", "metadata_saver_viewer"}}
@@ -690,9 +714,21 @@ class LoadImageMetadata:
         }
 
         if sidecar is None and raw_prompt is not None:
-            metadata["generated_summary"] = _build_metadata(raw_prompt, raw_extra)
+            metadata["generated_summary"] = _build_metadata(
+                raw_prompt,
+                raw_extra,
+                image_index=embedded_image_index,
+            )
 
-        display_metadata = sidecar if prefer_sidecar_json and sidecar is not None else metadata
+        if prefer_sidecar_json and sidecar is not None:
+            display_metadata = sidecar
+        elif embedded_msv is not None:
+            display_metadata = embedded_msv
+        elif "generated_summary" in metadata:
+            display_metadata = metadata["generated_summary"]
+        else:
+            display_metadata = metadata
+
         workflow = None
         if isinstance(sidecar, dict):
             workflow = sidecar.get("raw", {}).get("workflow")
